@@ -4,17 +4,48 @@
   <meta charset="UTF-8">
 
   <style>
+
+    html, body {
+      height: 100%;
+      margin: 0;
+    }
+
     body {
+      display: flex;
+      flex-direction: column;
       font-family: Arial, sans-serif;
+    }
+
+    .content-wrapper {
+      flex: 1 0 auto;
       max-width: 800px;
-      margin: auto;
+      margin: 0 auto;
       padding: 2rem;
-      position: relative;
+      width: 100%;
+      box-sizing: border-box;
     }
 
     header {
       position: relative;
       margin-bottom: 2rem;
+    }
+
+    footer {
+      flex-shrink: 0;
+      text-align: center;
+      font-size: 14px;
+      padding-top: 2rem;
+      padding-bottom: 0;
+    }
+
+    footer hr {
+      max-width: 800px;
+      margin: 0 auto 1rem auto;
+    }
+
+    footer a {
+      color: #1F6787;
+      font-weight: 500;
     }
 
     .logo {
@@ -54,11 +85,13 @@
     .project-otherlinks {
       font-size: 14px;
     }
+
   </style>
 </head>
 
 <body>
 
+<div class="content-wrapper">
   <header>
     <img src="html_assets/PersonalLogo-01.png"
          alt="Adam Morgenstern Logo"
@@ -83,10 +116,10 @@
       </span><br>
 
       <span class="project-otherlinks">
-        <a href="https://github.com/username/DataAnalysis-CaseStudies/tree/main/Cyclistic_2025" target="_blank">
+        <a href="https://github.com/Morgea/DataAnalysis-CaseStudies/Cyclistic_2025" target="_blank">
           GitHub Folder
         </a> |
-        <a href="Cyclistic_2025/cyclistic_analysis_2025.Rmd" target="_blank">
+        <a href="Cyclistic_2025/Cyclistic_Analysis_2025.Rmd" target="_blank">
           R Markdown File
         </a>
       </span>
@@ -94,5 +127,15 @@
 
   </ul>
 
+</div>
+
+<footer>
+  <hr>
+  <p>
+    <a href="https://www.linkedin.com/in/adammorgenstern" target="_blank">LinkedIn</a>
+  </p>
+</footer>
+
 </body>
+
 </html>
