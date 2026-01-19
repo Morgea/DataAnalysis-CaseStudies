@@ -2,7 +2,7 @@
 title: "Cyclistic Bike-Share Analysis: Comparing Annual Members and Casual Riders (2025)"
 author: "Adam Morgenstern"
 output: html_document
-date: "2026-01-14"
+date: "Last updated: 2026-01-19"
 ---
 
 # Introduction
