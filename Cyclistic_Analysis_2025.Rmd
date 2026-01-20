@@ -1,0 +1,729 @@
+---
+title: "Cyclistic Bike-Share Analysis: Comparing Annual Members and Casual Riders (2025)"
+author: "Adam Morgenstern"
+output: html_document
+date: "Last updated: 2026-01-20"
+---
+
+# Introduction
+
+This case study analyzes 2025 Cyclistic bike-share data to answer the question: 
+
+> How do annual members and casual riders use Cyclistic bikes differently?
+
+Using *R* and the `tidyverse`, I cleaned, processed, and analyzed the dataset to explore patterns in **ride frequency**, **time of day**, **ride length**, and **bike type**. The goal is to identify meaningful differences in behavior between rider types and provide actionable insights for marketing and operational strategies to convert *single-ride* and *day-pass* (**"casual"**) riders into annual **"members"**.
+
+---
+
+# 1. Load Packages
+
+Install and load relevant packages.
+```{r setup, message=FALSE}
+# install.packages("tidyverse")
+# install.packages("knitr")
+# install.packages("kableExtra")
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+```
+
+---
+
+# 2. Import and Combine Data
+
+Get a list of all CSV files in the data folder.
+```{r data_import_filepaths}
+csv_file_paths <- list.files(path = "data/2025-divvy-tripdata", pattern = "*.csv", full.names = TRUE)
+```
+
+<br>
+
+Read all csv files and combine them into a single tibble data frame.
+```{r data_import_combine, message=FALSE, cache = TRUE}
+tripdata_2025_combined <- map_dfr(csv_file_paths, read_csv)
+```
+
+<br>
+
+Let's take a look at the raw combined data in our frame variable.
+```{r data_import_glimpse, cache = TRUE}
+glimpse(tripdata_2025_combined)
+```
+We can confirm here that *started_at* and *ended_at* are in date/time format.
+
+<br>
+
+We'll start by creating a cleaned working dataset.  
+We want to preserve the original raw dataset and perform all transformations on a cleaned copy.
+```{r data_import_copy}
+tripdata_2025_cleaned <- tripdata_2025_combined
+```
+
+---
+
+# 3. Data Cleaning
+
+Let's start by checking if any columns have missing data.
+```{r data_cleaning_missingdata_check}
+tibble(
+  column = names(tripdata_2025_cleaned),
+  missing_count = colSums(is.na(tripdata_2025_cleaned))
+  ) %>%
+  mutate(missing_count = format(missing_count, big.mark = ",")) %>%
+  kable(
+    col.names = c("Column to Check", "Missing Data Count")
+    ) %>% 
+  kable_styling(full_width = FALSE, position = "left", bootstrap_options = c("striped", "bordered"))
+```
+There do seem to be a lot of missing station names and ids, but since these aren't as important for our analyses, we can safely ignore them. For a more detailed analysis, we might be able to impute some of these missing values by matching latitude and longitude values.  
+Out of the important columns for our analyses, it looks like only *end_lat* and *end_lng* have missing data (5,535 each).  
+
+<br>
+
+As a quick follow-up, we can see if any of our rows with missing *end_lat* or *end_lng* values have *end_station_name* or *end_station_id* values we could try to match up to impute the values.
+```{r data_cleaning_missingdata_latlon}
+tripdata_2025_cleaned %>%
+  filter(is.na(end_lat) | is.na(end_lng)) %>%
+  summarise(
+    missing_station_name = sum(is.na(end_station_name)),
+    missing_station_id = sum(is.na(end_station_id))
+  ) %>%
+  mutate(
+    missing_station_name = format(missing_station_name, big.mark = ","),
+    missing_station_id = format(missing_station_id, big.mark = ",")
+  ) %>%
+  kable(
+    col.names = c("Missing End Station Name", "Missing End Station ID")
+  ) %>% 
+  kable_styling(full_width = FALSE, position = "left", bootstrap_options = c("bordered"))
+```
+It seems that all rows with missing *end_lat* or *end_lng* values are also missing these values, so we don't have a reliable way to impute the data. With only 5,535 missing values for each, representing a very small fraction of the dataset, this should be fairly negligible for our analyses.
+
+<br>
+
+Since our analysis depends on comparing rider types, we should verify that the *member_casual* column only contains either *member* or *casual*.
+```{r data_cleaning_membercasual_check}
+tripdata_2025_cleaned %>%
+  count(member_casual) %>%
+  mutate(n = format(n, big.mark = ",")) %>%
+  kable(
+    col.names = c("Rider Type", "Count")
+    ) %>% 
+  kable_styling(full_width = FALSE, position = "left", bootstrap_options = c("bordered"))
+```
+This looks correct, as we only have two unique values in the *member_casual* column.  
+We can also see that there are about 78% more *member* rides than *casual* rides.  
+Since there are no missing or incorrect values in *member_casual*, we know all trips can be categorized by rider type and we don't need to filter anything out yet.
+
+<br>
+
+Now we'll check if any *ended_at* date/times are the same as the *started_at* date/times.  
+This could still be valid if the start and end stations are the same due to user canceling the trip or some technical issue.
+```{r data_cleaning_datetimecheck_equal}
+sum(tripdata_2025_cleaned$ended_at == tripdata_2025_cleaned$started_at, na.rm = TRUE)
+```
+No *started_at* and *ended_at* times are equal.
+
+<br>
+
+Now let's check if any *ended_at* date/times occur before the *started_at* date/times.
+```{r data_cleaning_datetimecheck_lessthan}
+sum(tripdata_2025_cleaned$ended_at < tripdata_2025_cleaned$started_at, na.rm = TRUE)
+```
+We do have an issue here with 29 *ended_at* date/times that come before the *started_at*.
+
+<br>
+
+We'll remove the rows where *ended_at* is before *started_at*, since these represent invalid trip times.  
+With the amount of data we have, removing them should have a minimal effect on our dataset.
+```{r data_cleaning_filter_invalidtrips}
+tripdata_2025_cleaned <- tripdata_2025_cleaned %>%
+  filter(ended_at > started_at)
+```
+
+<br>
+
+We'll add three new columns. *Ride_length* will be in minutes for the trip duration. *Month* and *day_of_week* will be ordered factors showing the full label.
+```{r data_cleaning_add_new_cols}
+tripdata_2025_cleaned <- tripdata_2025_cleaned %>%
+  mutate(
+    ride_length = as.numeric(difftime(ended_at, started_at, units="mins")),
+    month = month(started_at, label = TRUE, abbr = FALSE),
+    day_of_week = wday(started_at, label = TRUE, abbr = FALSE)
+    )
+```
+
+<br>
+
+Let's take a look to make sure the new columns were added correctly.
+```{r data_cleaning_glimpse_new_cols}
+glimpse(tripdata_2025_cleaned)
+```
+Looks good to me.
+
+<br>
+
+Finally, we'll sort the whole dataset by the *started_at* date/time.  
+This is optional, as later analyses don't require sorted data, but it's helpful to know the trips are now sorted in chronological order.
+```{r data_cleaning_arrange_by_startedat}
+tripdata_2025_cleaned <- tripdata_2025_cleaned %>% 
+  arrange(started_at)
+```
+
+<br>
+
+### Data Verification and Integrity
+
+Before beginning analysis, we verified the integrity of the dataset, checked for missing or invalid values, and assessed its reliability, objectivity, and potential biases.
+
+<br>
+
+#### Data integrity
+
+- The dataset was checked for missing and incorrect values
+- 29 rows where the trip start and end times were invalid were removed
+- 5,535 rows had missing end station latitude and longitude, which should be negligible if used in analysis
+
+#### Bias and credibility
+
+- This data includes trips recorded by Cyclistic's system
+- Demographic information, such as age or gender, is not included
+- There is no unique rider identification included
+- The dataset is large enough that any outliers are unlikely to significantly bias overall trends
+
+#### ROCCC check
+
+- **Reliable:** The data comes from Cyclistic's tracking system
+- **Objective:** Recording is automated, not self-reported
+- **Comprehensive:** Covers all trips that took place in 2025
+- **Current:** Data is from the most recent full year available at the time of analysis
+- **Cited:** The dataset is publicly available from Motivate International, and cited accordingly
+
+<br>
+
+---
+
+# 4. Data Analysis
+
+## 4.1 Rider Type
+
+To understand overall usage, we first look at the number of rides taken by each rider type.
+```{r data_analysis_membercasual_count}
+tripdata_2025_cleaned %>%
+  count(member_casual) %>%
+  mutate(n = format(n, big.mark = ",")) %>%
+  kable(
+    col.names = c("Rider Type", "Number of Rides")
+    ) %>%
+  kable_styling(full_width = FALSE, position = "left", bootstrap_options = c("bordered"))
+```
+As we noted before, there are roughly 78% more *member* rides than *casual* rides.
+
+<br>
+
+To visualize that in a quick bar chart:
+```{r viz_analysis_membercasual_count_barplot, fig.width = 6, fig.height = 4}
+# Let's store hex colors in a vector for casual and member to reuse in other charts
+ride_type_colors <- c("member" = "#619CFF", "casual" = "#F8766D")
+
+tripdata_2025_cleaned %>%
+  count(member_casual) %>%
+  ggplot(aes(x = member_casual, y = n, fill = member_casual)) +
+  geom_col(width = 0.4, show.legend = FALSE) +
+  geom_text(aes(label = scales::comma(n)), vjust = -0.6, size = 4) +
+  scale_fill_manual(values = ride_type_colors) +
+  scale_y_continuous(labels = scales::comma, expand = expansion(mult = c(0, 0.2))) +
+  labs(
+    x = "Rider Type",
+    y = "Number of Rides"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(size = 12),
+    axis.title.x = element_text(size = 11, margin = margin(t = 8)),
+    axis.title.y = element_text(size = 11, margin = margin(r = 8))
+  )
+```
+
+<br>
+
+<br>
+
+## 4.2 Time of Year
+
+We begin examining when rides occurred using monthly ride counts. Seasonal time of year may show differences between *casual* and *member* rides, so we'll look at counts by month. While it is reasonable to expect that warmer months will have more rides overall, our focus here is on identifying any differences in seasonal patterns between rider types.
+```{r data_analysis_membercasual_months}
+monthly_counts <- tripdata_2025_cleaned %>%
+  count(month, member_casual) %>%
+  pivot_wider(
+    names_from = member_casual,
+    values_from = n
+  ) %>%
+  arrange(month)
+
+monthly_counts %>%
+  mutate(
+    casual = format(casual, big.mark = ","),
+    member = format(member, big.mark = ",")
+  ) %>%
+  kable(
+    col.names = c("Month", "Casual Rides", "Member Rides")
+    ) %>% 
+  kable_styling(full_width = FALSE, position = "left", bootstrap_options = c("striped", "bordered"))
+```
+This table lets us compare the count for each month of the year, but since we know *member* rides occur far more frequently overall, it's difficult to directly compare the two groups.
+
+<br>
+
+To address this, we'll recreate the chart using monthly percentages, calculated as the proportion of each rider type's total rides in each month. This normalizes the data and provides a clearer basis for comparison.
+```{r data_analysis_membercasual_months_percentage}
+monthly_counts %>%
+  mutate(
+    casual = paste0(format(casual, big.mark = ","), " (*", sprintf("%.1f", 100 * casual / sum(casual)), "%*)"),
+    member = paste0(format(member, big.mark = ","), " (*", sprintf("%.1f", 100 * member / sum(member)), "%*)")
+  ) %>%
+  select(month, casual, member) %>%
+  kable(
+    col.names = c("Month", "Casual Rides", "Member Rides")
+    ) %>% 
+  kable_styling(full_width = FALSE, position = "left", bootstrap_options = c("striped", "bordered"))
+```
+Using percentages gives us a better way to compare and we can quickly see that there are some obvious differences between the percentages of *casual* and *member* rides for some months.
+
+<br>
+
+Let's plot the monthly percentages on a grouped bar chart to give us an even easier way to spot any trends between rider types.
+```{r viz_analysis_membercasual_months_groupedbar, fig.width = 10, fig.height = 6}
+month_pct <- tripdata_2025_cleaned %>%
+  count(month, member_casual) %>%
+  group_by(member_casual) %>%
+  mutate(pct = n / sum(n)) %>%
+  ungroup()
+
+ggplot(month_pct, aes(x = month, y = pct, fill = member_casual)) +
+  geom_col(position = position_dodge(width = 0.8), width = 0.7) +
+  scale_y_continuous(
+    labels = scales::percent_format(accuracy = 1),
+    expand = expansion(mult = c(0, 0.05))
+  ) +
+  scale_fill_manual(values = ride_type_colors) +
+  labs(
+    x = "Month",
+    y = "Percentage of Rides",
+    fill = NULL
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(size = 11),
+    axis.text.y = element_text(size = 10),
+    axis.title.x = element_text(margin = margin(t = 10)),
+    axis.title.y = element_text(margin = margin(r = 10)),
+    legend.position = c(0.075, 0.80),
+    legend.justification = c(0, 1),
+    legend.direction = "vertical",
+    legend.text = element_text(size = 11),
+    legend.key.spacing.y = unit(8, "pt"),
+    legend.background = element_rect(
+      fill = scales::alpha("white", 0.8),
+      color = NA
+    ),
+    panel.grid.minor = element_blank()
+  )
+```
+The chart shows clear seasonal differences in rider behavior. A larger proportion of *casual* rides occur during the summer months of **June**, **July**, and **August**, while a larger proportion of *member* rides occur during the winter months of **December**, **January**, and **February**.
+
+<br>
+
+To better summarize these seasonal patterns, we can group months into broader season periods and compare the proportion of rides taken by each rider type.
+```{r data_analysis_membercasual_seasonal}
+tripdata_2025_cleaned <- tripdata_2025_cleaned %>%
+  mutate(
+    season = case_when(
+      month %in% c("December", "January", "February") ~ "Winter",
+      month %in% c("March", "April", "May") ~ "Spring",
+      month %in% c("June", "July", "August") ~ "Summer",
+      month %in% c("September", "October", "November") ~ "Fall"
+    ),
+    season = factor(season, levels = c("Winter", "Spring", "Summer", "Fall"))
+  )
+
+# Pivot wider and create kable
+tripdata_2025_cleaned %>%
+  count(season, member_casual) %>%
+  pivot_wider(
+    names_from = member_casual,
+    values_from = n
+  ) %>%
+  arrange(season) %>%
+  mutate(
+    casual = paste0(format(casual, big.mark = ","), " (*", sprintf("%.1f", 100 * casual / sum(casual)), "%*)"),
+    member = paste0(format(member, big.mark = ","), " (*", sprintf("%.1f", 100 * member / sum(member)), "%*)")
+  ) %>%
+  select(season, casual, member) %>%
+  kable(
+    col.names = c("Season", "Casual Rides", "Member Rides")
+  ) %>% 
+  kable_styling(full_width = FALSE, position = "left", bootstrap_options = c("striped", "bordered"))
+```
+This makes it very clear how big a difference there is in what time of year the different groups ride. The percentages of *summer* and *winter* rides show the largest differences. While *winter* *casual* rides show more than double the percentage of *member* rides, it still represents a relatively small proportion compared to *summer*, which accounts for nearly half of all *casual* rides and over a third of *member* rides.
+
+<br>
+
+## 4.3 Day of the Week
+
+Next, we check how many rides on each day of the week, comparing *member* vs *casual*.  
+*Hypothesis*: *Member* rides will be more frequent on weekdays, while *casual* rides will peek on weekends. This likely reflects *members* using the bikes for their daily commute, while *casual* riders use them more for recreation. Since we know the total counts are so different, we'll include percentages.
+```{r data_analysis_membercasual_weekdays}
+day_of_week_counts <- tripdata_2025_cleaned %>%
+  count(day_of_week, member_casual) %>%
+  pivot_wider(
+    names_from = member_casual,
+    values_from = n
+  ) %>%
+  arrange(day_of_week)
+
+day_of_week_counts %>%
+  mutate(
+    casual = paste0(format(casual, big.mark = ","), " (*", sprintf("%.1f", 100 * casual / sum(casual)), "%*)"),
+    member = paste0(format(member, big.mark = ","), " (*", sprintf("%.1f", 100 * member / sum(member)), "%*)")
+  ) %>%
+  select(day_of_week, casual, member) %>%
+  kable(
+    col.names = c("Day of the Week", "Casual Rides", "Member Rides")
+    ) %>% 
+  kable_styling(full_width = FALSE, position = "left", bootstrap_options = c("striped", "bordered"))
+```
+We can quickly see that a much higher percentage of *casual* rides are on the weekends, whereas *member* rides tend to be during the week.
+
+<br>
+
+We can plot these day of the week percentages on a line chart to compare rider types.
+```{r viz_analysis_membercasual_weekdays_lineplot, fig.width = 10, fig.height = 6}
+# Calculate percentages and store in a new tibble for later use
+day_of_week_percent <- tripdata_2025_cleaned %>%
+  count(day_of_week, member_casual) %>%
+  group_by(member_casual) %>%
+  mutate(percentage = n / sum(n) * 100) %>%
+  ungroup()
+
+last_points <- day_of_week_percent %>%
+  group_by(member_casual) %>%
+  filter(day_of_week == max(day_of_week))
+
+# Create a line chart using the stored variable
+ggplot(day_of_week_percent, aes(x = day_of_week, y = percentage, color = member_casual, group = member_casual)) +
+  geom_line(linewidth = 1.2) +
+  geom_point(size = 3) +
+  scale_color_manual(values = ride_type_colors) +
+  scale_y_continuous(limits = c(10, 21), breaks = seq(10, 21, 2)) +
+  labs(title = "Percentage of Rides by Day of Week and Rider Type",
+       x = NULL, y = "Percentage of Rides", color = "Rider Type") +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    axis.text.x = element_text(size = 11),
+    axis.title.y = element_text(margin = margin(r = 8))
+  ) +
+  geom_text(
+    data = last_points,
+    aes(label = member_casual),
+    hjust = -0.2,
+    vjust = 0.22,
+    size = 5
+  ) +
+  coord_cartesian(clip = "off")
+```
+This clearly shows how different the curves are.  
+Casual rides are more prevalent on weekends, dipping lower mid-week.  
+Member rides are lowest on the weekends, with the most rides occurring on Tuesday, Wednesday, and Thursday.
+
+<br>
+
+## 4.4 Time of Day
+
+We'll now look for any differences in the time of day between *casual* and *member* rides. We'll use the *started_at* date/time and break the hours of the day into eight three-hour groups. Eight provides a good balance between keeping our analysis uncluttered with too many buckets, but still splitting the day into enough distinct time periods.  
+*Hypothesis*: *Member* rides will tend to be most frequent during rush hour times (7am-10am and 3pm-6pm), while *casual* rides will be higher in the middle of the day. This again would reflect *members* using the bikes for their commute and *casual* riders using them for recreation.
+```{r data_analysis_membercasual_timeofday}
+tripdata_2025_cleaned <- tripdata_2025_cleaned %>%
+  mutate(
+    # Extract the ride starting hour (0-23)
+    start_hour = hour(started_at),
+    
+    # Create the time intervals
+    start_time_bucket = cut(
+      start_hour,
+      breaks = seq(0, 24, by = 3),
+      right = FALSE,
+      labels = c("Midnight-3am", "3am-6am", "6am-9am", "9am-Noon", "Noon-3pm", "3pm-6pm", "6pm-9pm", "9pm-Midnight")
+    )
+  )
+
+# Pivot wider and create kable
+tripdata_2025_cleaned %>%
+  count(start_time_bucket, member_casual) %>%
+  pivot_wider(
+    names_from = member_casual,
+    values_from = n
+  ) %>%
+  arrange(start_time_bucket) %>%
+  mutate(
+    casual = paste0(format(casual, big.mark = ","), " (*", sprintf("%.1f", 100 * casual / sum(casual)), "%*)"),
+    member = paste0(format(member, big.mark = ","), " (*", sprintf("%.1f", 100 * member / sum(member)), "%*)")
+  ) %>%
+  select(start_time_bucket, casual, member) %>%
+  kable(
+    col.names = c("Time of Day", "Casual Rides", "Member Rides")
+  ) %>% 
+  kable_styling(full_width = FALSE, position = "left", bootstrap_options = c("striped", "bordered"))
+```
+We do see some differences here, but only in a few timespans, notably 6am-9am where *member* rides are much higher and noon-3pm where *casual* rides are much higher. Much of the other sections are very close.
+
+<br>
+
+Let's plot this out on another grouped bar chart to visualize where the differences are.
+```{r viz_analysis_membercasual_timeofday, fig.width = 10}
+time_of_day_pct <- tripdata_2025_cleaned %>%
+  count(start_time_bucket, member_casual) %>%
+  group_by(member_casual) %>%
+  mutate(pct = n / sum(n)) %>%
+  ungroup()
+
+ggplot(time_of_day_pct, aes(x = start_time_bucket, y = pct, fill = member_casual)) +
+  geom_col(position = position_dodge(width = 0.8), width = 0.7) +
+  scale_y_continuous(
+    labels = scales::percent_format(accuracy = 1),
+    expand = expansion(mult = c(0, 0.05))
+  ) +
+  scale_fill_manual(values = ride_type_colors) +
+  labs(
+    x = "Time of Day",
+    y = "Percentage of Rides",
+    fill = NULL
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(size = 11),
+    axis.text.y = element_text(size = 10),
+    axis.title.x = element_text(margin = margin(t = 10)),
+    axis.title.y = element_text(margin = margin(r = 10)),
+    legend.position = c(0.075, 0.80),
+    legend.justification = c(0, 1),
+    legend.direction = "vertical",
+    legend.text = element_text(size = 11),
+    legend.key.spacing.y = unit(8, "pt"),
+    legend.background = element_rect(
+      fill = scales::alpha("white", 0.8),
+      color = NA
+    ),
+    panel.grid.minor = element_blank()
+  )
+```
+We can see from the bar chart that several time periods have very similar ride distributions between rider types: **3am-6am**, **9am-noon**, **3pm-6pm**, and **6pm-9pm**.  
+<br>
+*Casual* rides make up a higher percentage from **midnight-3am**, **noon-3pm**, and **9pm-midnight**, suggesting greater use outside of traditional commuter hours.  
+<br>
+In contrast, the percentage of *member* rides from **6am-9am** is more than double that of *casual* rides, strongly suggesting commuter-driven usage during morning rush hours.  
+<br>
+Overall, this partially supports our hypothesis. The **6am-9am** window aligns with typical morning commute hours, while **late-night** and **midday** use would be more consistent with recreational rides. The **noon-3pm** time window shows similar high usage for both rider types, which may reflect an overlap of the evening commute with recreational riding.
+
+<br>
+
+## 4.5 Ride Length
+
+To start analyzing the ride length (duration) for each rider type, let's look at the mean, median, min, and max.
+```{r data_analysis_membercasual_ridelengths}
+tripdata_2025_cleaned %>%
+  group_by(member_casual) %>%
+  summarize(
+    mean_ride_length = mean(ride_length),
+    median_ride_length = median(ride_length),
+    min_ride_length = min(ride_length),
+    max_ride_length = max(ride_length)
+  ) %>%
+  kable(
+    digits = 2,
+    format.args = list(big.mark = ",", nsmall = 2),
+    col.names = c("Rider Type", "Mean (mins)", "Median (mins)", "Min (mins)", "Max (mins)")
+  ) %>%
+  kable_styling(full_width = FALSE, position = "left", bootstrap_options = c("bordered"))
+```
+Casual riders seem to take longer rides, nearly double on average.
+
+<br>
+
+We can take a look at the ride length data on a density plot here. We limit the chart to 50 to get a better view of the highest density areas, because there is a long tail to the right, which would continue to over 1,500 minutes.
+```{r viz_analysis_membercasual_ridelengths_densityplot, fig.width = 10, warning = FALSE}
+tripdata_2025_cleaned %>%
+  ggplot(aes(x = ride_length, fill = member_casual)) +
+  geom_density(alpha = 0.55) +
+  scale_x_continuous(limits = c(0, 50), name = "Ride Length (mins)") +
+  ylab("Density") +
+  ggtitle("Ride Length Distribution by Rider Type") +
+  scale_fill_manual(values = ride_type_colors) +
+  theme_minimal() +
+  theme(
+    legend.position = c(0.65, 0.65),
+    legend.key.spacing.y = unit(0.25, "lines"),
+    legend.background = element_rect(linewidth = 0.7),
+    legend.title = element_blank(),
+    axis.title.x = element_text(margin = margin(t = 8)),
+    axis.title.y = element_text(margin = margin(r = 8))
+  )
+```
+This shows us that members tend to take shorter rides, as the curve peaks higher and slightly earlier.  
+Casual riders are more likely to take longer rides, as the casual curve has a heavier right tail.  
+Both rider types exhibit similarly shaped distributions, with notable overlap between 5 and 10 minutes.
+
+<br>
+
+## 4.6 Rideable Type
+
+Since we have two types of bikes in our data, we can compare which bike type was more preferred on member and casual rides. Again, since the totals for ride type are so different, we'll add percentages in to make it easier to compare.
+```{r data_analysis_membercasual_rideabletype}
+rideable_counts <- tripdata_2025_cleaned %>%
+  mutate(rideable_type = recode(
+    rideable_type,
+    "classic_bike" = "Classic Bike",
+    "electric_bike" = "Electric Bike"
+  )) %>%
+  count(rideable_type, member_casual) %>%
+  pivot_wider(
+    names_from = member_casual,
+    values_from = n
+  )
+
+rideable_counts %>%
+  mutate(
+    casual = paste0(format(casual, big.mark = ","), " (*", sprintf("%.1f", 100 * casual / sum(casual)), "%*)"),
+    member = paste0(format(member, big.mark = ","), " (*", sprintf("%.1f", 100 * member / sum(member)), "%*)")
+  ) %>%
+  select(rideable_type, casual, member) %>%
+  kable(
+    col.names = c("Rideable Type", "Casual Rides", "Member Rides"),
+  ) %>%
+  kable_styling(full_width = FALSE, position = "left", bootstrap_options = c("striped", "bordered"))
+```
+Both *casual* and *member* riders show a similar distribution of bike types, favoring *electric* by some margin. While *casual* riders have a slightly higher proportion of rides on *electric* bikes, the difference is minimal (**~2.3%**) and unlikely to have a meaningful impact on our analysis.
+
+<br>
+
+---
+
+# 5. Conclusions & Recommendations
+
+In this section, we'll review the analyses we've done so far, state our conclusions, and make some recommendations for further analysis and what the company can do to try to convert riders from *casual* to annual *members*.
+
+## 5.1 Comparison of Differences
+
+Let's compare several key behaviors we examined to identify where the largest differences occur between *casual* rides and annual *member* rides.  
+<br>
+We'll use:  
+
+- the percentage of winter rides
+*This compares the largest seasonal difference and helps test the commuter hypothesis, since we can theorize that recreational riders are more likely to ride primarily during the warmer months, while commuters following a routine are more likely to continue riding through colder temperatures*  
+<br>
+- the percentage of weekend (Friday, Saturday, Sunday) vs weekday rides  
+*This compares the biggest difference in day of the week and checks our commuter hypothesis*  
+<br>
+- the percentage of rides during morning commute hours (6am-9am)  
+*This compares the time period with the biggest difference and checks our commuter hypothesis*  
+<br>
+- the median (typical) ride length  
+*We use the median here to include a broader spectrum of 'typical' rides without being affected as much by the long tail*  
+<br>
+- the percentage of electric bikes vs classic bikes  
+*Although we know the difference here is minimal, it's one of our tracked statistics in the data and useful to compare, and made easier because there are only two rideable types recorded*
+```{r conclusion_differences_table}
+final_comparison <- tripdata_2025_cleaned %>%
+  group_by(member_casual) %>%
+  summarise(
+    "Winter rides (Dec-Feb)" = mean(season == "Winter") * 100,
+    "Weekend rides (Fri–Sun)" = mean(day_of_week %in% c("Friday", "Saturday", "Sunday")) * 100,
+    "Morning commute (6am–9am)" = mean(start_hour >= 6 & start_hour < 9) * 100,
+    "Typical ride length (median)" = median(ride_length, na.rm = TRUE),
+    "Electric bike rides" = mean(rideable_type == "electric_bike") * 100,
+    .groups = "drop"
+  ) %>%
+  pivot_longer(cols = -member_casual, names_to = "Metric", values_to = "Value") %>%
+  pivot_wider(names_from = member_casual, values_from = Value) %>%
+  mutate(
+    # Calculate a Percent Difference for each factor: (Cas - Mem) / Mem
+    Percent_Diff = abs((casual - member) / member) * 100,
+  ) %>%
+  # Sort by the largest Percent Difference
+  arrange(desc(Percent_Diff))
+
+final_comparison %>%
+  mutate(
+    # Add labels for each value
+    Casual_Display = if_else(
+      str_detect(Metric, "length"),
+      paste0(sprintf("%.1f", casual), " mins"),
+      paste0(sprintf("%.1f", casual), "%")
+    ),
+    Member_Display = if_else(
+      str_detect(Metric, "length"),
+      paste0(sprintf("%.1f", member), " mins"),
+      paste0(sprintf("%.1f", member), "%")
+    ),
+    Percent_Diff = paste0(sprintf("%.1f", Percent_Diff), "%")
+  ) %>%
+  select(Metric, Casual_Display, Member_Display, Percent_Diff) %>%
+  kable(col.names = c("Metric", "Casual Rides", "Member Rides", "Percent Difference")) %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "bordered"), position = "left")
+```
+*Note*: We calculate *Percent Difference* as the absolute value of ((Casual - Member) / Member) * 100. This gives us a way to directly compare the different types of factors on the same relative scale.  
+<br>
+We can conclude that the percentage of rides in the *winter* represents the single largest behavioral difference between *casual* and *member* riders, with the *6am-9am morning commute* not far behind. *Weekend* vs *weekday* riding and *ride length* also show substantial differences. There was very little variation in which *bike type* was used between the two groups.
+
+<br>
+
+## 5.2 Summary of Key Differences
+
+The most pronounced behavioral differences between *casual* and annual *member* riders occur in **when** and for **how long** bikes were used, rather than **what** bike was used.  
+<br>
+*Member* rides show a significantly higher proportion during **weekday** travel and during **early morning hours (6am-9am)** compared to *casual* rides. While these factors were analyzed independently, their combined pattern is consistent with **commuter travel**, supporting the hypothesis that annual *members* are more likely to use Cyclistic bikes for work-related travel. In contrast, *casual* rides are more concentrated on **weekends** and during the **midday or late evening hours**, aligning more closely with recreational travel. Seasonally, annual *member* rides had a much higher percentage during the winter months, which would be consistent with riders commuting as part of their routine continuing to use the bikes through the coldest months of the year, while recreational riders would be much less likely to ride through the **winter**. As we saw, earlier, however, this represents a small proportion of riders for both groups. **Summer rides**, which still exhibited a sizable difference, accounted for nearly half of *casual* rides and over a third of *member* rides. This further supports the idea of *casual* riders preferring warmer times of the year for recreational rides.  
+<br>
+Differences in **ride length** were somewhat less substantial, while still showing *casual* rides to be longer on average. Rides longer than 12 minutes, especially, were much more likely to be *casual*, which may further suggest recreational or leisure use.  
+<br>
+Finally, **bike type** preference showed minimal variation between the two groups. Both *casual* and *member* riders strongly favored *electric* bikes, indicating that *rideable type* is not a strong differentiator between rider categories.
+
+<br>
+
+## 5.3 Recommendations
+
+Based on our analysis of the 2025 Cyclistic ride data, we can conclude that the most meaningful differences between *casual* and annual *member* rides were observed in **time of year**, **day of week**, **time of day**, and **ride length**, while the **type of bike** used showed little statistical difference between the groups. *Casual* rides occurred more frequently on **weekends**, during **midday** and **late evening** hours, in the **warmer months**, and were more likely to be **longer trips**.  
+<br>
+To support the marketing team's goal of converting *casual* riders into annual *members*, we recommend offering **targeted incentives** that encourage *casual* riders to take **shorter rides during weekday commuter hours**. These incentives could take the form of discounts sent to single-ride and full-day pass customers. These discounts would be specifically for rides taken on **weekdays**, **during morning or evening commuter hours**, and/or of a **shorter duration**. Additionally, discounts could be distributed during or targeted for **the cooler seasons**.  
+<br>
+The goal of this strategic initiative would be to encourage *casual* riders to try out using Cyclistic bikes for work-related travel. By repeatedly offering these discounted prices, *casual* riders may discover that commuting by bike is both feasible and beneficial, increasing the likelihood that it **becomes part of their regular routine**. Over time, follow-up messaging could introduce annual *membership* options, once **habitual usage** is established.  
+<br>
+Because **bike type** preference **differed minimally** between *casual* and *member* riders, marketing efforts focused on rideable type are unlikely to meaningfully influence conversion and should be deprioritized in favor of time- and behavior-based strategies, though it should be noted for other initiatives that **electric** bikes were strongly preferred by both groups.
+
+<br>
+
+## 5.4 Suggestions for Further Analysis
+
+One significant limitation of the current data is that there is no rider identification, so it isn't currently possible to analyze rider trends. With unique rider ids, we would be able to further test the commuter theory (especially by combining it with day of the week, time of day, and station ids). We could also see how often riders use the service and determine if something like number of trips per day/week/month is another differentiating factor.  
+<br>
+Along with the lack of unique rider id, there is no demographic data, such as age or gender of riders. This would be very helpful in further analysis and especially in marketing recommendations.
+<br>
+Another area for further analysis would be to isolate the weekday and then examine whether weekend vs weekday has an effect on the other factors, like time of day and ride length. This could help support whether time of day differences were, in fact, driven by commuting behavior.  
+<br>
+Additionally, station pattern analysis, with or without unique rider ids, could prove useful, especially in determining areas with heavy weekday morning usage or for tracking commuter patterns. It could show which stations are used more often by the different member groups. Combined with unique rider ids, it could show whether member riders are more likely to repeat the same trips.
+
+<br>
+
+---
+
+# 6. Notes and Citations
+
+The data analyzed in this case study was obtained from Divvy’s publicly available trip data and includes individual monthly CSV files for the year 2025. The dataset was accessed via the Divvy Trip Data repository and is provided for public use.  
+<br>
+**Data Source:**
+Divvy Bikes. (2025). *Divvy Trip Data*. Retrieved from https://divvy-tripdata.s3.amazonaws.com/index.html  
+<br>
+<br>
+<br>
+*This case study was completed as part of the Google Data Analytics Professional Certificate program.  
+All analysis and conclusions reflect the author’s independent work.*
