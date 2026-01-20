@@ -11,7 +11,7 @@ This case study analyzes 2025 Cyclistic bike-share data to answer the question:
 
 > How do annual members and casual riders use Cyclistic bikes differently?
 
-Using *R* and the `tidyverse`, I cleaned, processed, and analyzed the dataset to explore patterns in **ride frequency**, **time of day**, **ride length**, and **bike type**. The goal is to identify meaningful differences in behavior between rider types and provide actionable insights for marketing and operational strategies to convert *single-ride* and *day-pass* (**"casual"**) riders into annual **"members"**.
+Using *R* and the `tidyverse`, I cleaned, processed, and analyzed the dataset to explore patterns in **ride frequency**, **time of year**, **day of week**, **time of day**, **ride length**, and **bike type**. The goal is to identify meaningful differences in behavior between rider types and provide actionable insights for marketing and operational strategies to convert *single-ride* and *day-pass* (**"casual"**) riders into annual **"members"**.
 
 ---
 
