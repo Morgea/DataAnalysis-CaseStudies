@@ -2,7 +2,7 @@
 title: "Cyclistic Bike-Share Analysis: Comparing Annual Members and Casual Riders (2025)"
 author: "Adam Morgenstern"
 output: html_document
-date: "Last updated: 2026-01-20"
+date: "Last updated: 2026-02-09"
 ---
 
 # Introduction
@@ -609,6 +609,62 @@ Both *casual* and *member* riders show a similar distribution of bike types, fav
 
 ---
 
+## 4.7 Geographic Patterns in Bike Usage
+
+While our earlier analyses explored temporal differences between casual and member riders, we can also examine *where** rides begin and end. By mapping each station and coloring it based on the proportion of casual vs member rides, we can see how usage patterns vary across the city. 
+```{r data_analysis_membercasual_stationmap, fig.width=10, fig.height=11, out.width="100%"}
+station_usage <- tripdata_2025_cleaned %>%
+  group_by(start_station_name, start_lat, start_lng) %>%
+  count(member_casual) %>%
+  pivot_wider(names_from = member_casual, values_from = n, values_fill = 0) %>%
+  mutate(
+    total = casual + member,
+    pct_casual = casual / total,
+    pct_member = member / total,
+    start_station_name = ifelse(is.na(start_station_name), "", start_station_name),
+
+    # log-based marker size (min 3px, max 20px)
+    marker_radius = scales::rescale(log1p(total), to = c(3, 20))
+  )
+
+library(leaflet)
+
+pal <- colorNumeric(
+  palette = colorRampPalette(c(ride_type_colors["member"], ride_type_colors["casual"]))(20),
+  domain = station_usage$pct_casual
+)
+
+leaflet(station_usage) %>%
+  addProviderTiles(providers$CartoDB.Positron) %>%
+  addCircleMarkers(
+    lng = ~start_lng,
+    lat = ~start_lat,
+    radius = ~marker_radius,
+    color = ~pal(pct_casual),
+    stroke = FALSE,
+    fillOpacity = 0.85,
+    label = ~lapply(
+      paste0(
+        ifelse(start_station_name == "" | is.na(start_station_name), "", paste0(start_station_name, "<br>")),
+        "Total rides: ", total, "<br>",
+        "Casual: ", sprintf("%.1f%%", 100 * pct_casual), "<br>",
+        "Member: ", sprintf("%.1f%%", 100 * pct_member)
+      ), 
+      htmltools::HTML
+    )
+  ) %>%
+  addLegend(
+    pal = pal,
+    values = ~pct_casual,
+    title = "% Casual Rides",
+    labFormat = labelFormat(suffix = "%", transform = function(x) 100 * x)
+  )
+```
+We can see some clear patterns here. Blue stations with the heaviest concentration of *member* rides are concentrated in "The Loop" and adjacent "North Side", following the train lines. Red *casual* ride stations are located around the fringes, particularly in the south and northwest. There's also a thin string of red along the coastline, representing the "Lakefront Trail" along the water, which is a popular leisure and tourist path, but also commonly used by commuters.
+<br>
+
+---
+
 # 5. Conclusions & Recommendations
 
 In this section, we'll review the analyses we've done so far, state our conclusions, and make some recommendations for further analysis and what the company can do to try to convert riders from *casual* to annual *members*.
@@ -698,7 +754,9 @@ To support the marketing team's goal of converting *casual* riders into annual *
 <br>
 The goal of this strategic initiative would be to encourage *casual* riders to try out using Cyclistic bikes for work-related travel. By repeatedly offering these discounted prices, *casual* riders may discover that commuting by bike is both feasible and beneficial, increasing the likelihood that it **becomes part of their regular routine**. Over time, follow-up messaging could introduce annual *membership* options, once **habitual usage** is established.  
 <br>
-Because **bike type** preference **differed minimally** between *casual* and *member* riders, marketing efforts focused on rideable type are unlikely to meaningfully influence conversion and should be deprioritized in favor of time- and behavior-based strategies, though it should be noted for other initiatives that **electric** bikes were strongly preferred by both groups.
+Because **bike type** preference **differed minimally** between *casual* and *member* riders, marketing efforts focused on rideable type are unlikely to meaningfully influence conversion and should be deprioritized in favor of time- and behavior-based strategies, though it should be noted for other initiatives that **electric** bikes were strongly preferred by both groups.  
+<br>
+Finally, **the geographic distribution of rides further supports a commuter-focused strategy**. While "The Loop" and "North Side" currently see more *member* use, **the presence of *casual* rides in these high-density interior zones suggests an opportunity to convert some of these riders to members**. We recommend targeting casual riders at these interior stations with incentives for weekday, peak-hour usage, encouraging them to incorporate Cyclistic into their daily routines.
 
 <br>
 
@@ -710,7 +768,9 @@ Along with the lack of unique rider id, there is no demographic data, such as ag
 <br>
 Another area for further analysis would be to isolate the weekday and then examine whether weekend vs weekday has an effect on the other factors, like time of day and ride length. This could help support whether time of day differences were, in fact, driven by commuting behavior.  
 <br>
-Additionally, station pattern analysis, with or without unique rider ids, could prove useful, especially in determining areas with heavy weekday morning usage or for tracking commuter patterns. It could show which stations are used more often by the different member groups. Combined with unique rider ids, it could show whether member riders are more likely to repeat the same trips.
+Additionally, station pattern analysis, with or without unique rider ids, could prove useful, especially in determining areas with heavy weekday morning usage or for tracking commuter patterns. It could show which stations are used more often by the different member groups. Combined with unique rider ids, it could show whether member riders are more likely to repeat the same trips.  
+<br>
+Future analysis should also involve segmenting station maps by day of the week or time of day. This would determine if the *casual* patterns in the south and northwest fringes persist during the work week, or if some of these areas see a shift towards *member* commuter rides.
 
 <br>
 
